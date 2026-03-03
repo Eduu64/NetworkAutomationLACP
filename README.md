@@ -268,4 +268,4 @@ self.MIN_SLOTS_FOR_DISTRIBUTION = 3
 ---
 
 **Versión**: 1.0  
-**Autor**: Ingeniero de Automatización de Redes Senior
+
