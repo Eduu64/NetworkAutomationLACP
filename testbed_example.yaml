@@ -1,0 +1,78 @@
+---
+# Archivo de configuración testbed.yaml para pyATS
+# Define los dispositivos, credenciales y parámetros de conexión
+
+testbed:
+  name: 'Cisco LACP Resiliency Test'
+  description: 'Testbed para validación de resiliencia LACP'
+  tacacs:
+    username: 'admin'
+  passwords:
+    tacacs: 'password123'
+    enable: 'enable123'
+    line: 'line123'
+
+devices:
+  # Ejemplo 1: Switch IOS-XE
+  switch_core_1:
+    type: 'switch'
+    os: 'iosxe'
+    platform: 'Catalyst 9300'
+    connections:
+      cli:
+        protocol: 'ssh'
+        ip: '10.0.1.10'
+        port: 22
+        arguments:
+          connection_timeout: 30
+          read_timeout: 30
+    credentials:
+      default:
+        username: 'admin'
+        password: 'password123'
+      enable:
+        password: 'enable123'
+
+  # Ejemplo 2: Switch IOS (antiguo)
+  switch_access_1:
+    type: 'switch'
+    os: 'ios'
+    platform: 'Catalyst 3650'
+    connections:
+      cli:
+        protocol: 'ssh'
+        ip: '10.0.1.11'
+        port: 22
+        arguments:
+          connection_timeout: 30
+          read_timeout: 30
+    credentials:
+      default:
+        username: 'admin'
+        password: 'password123'
+      enable:
+        password: 'enable123'
+
+  # Ejemplo 3: Switch NX-OS
+  switch_nx_1:
+    type: 'switch'
+    os: 'nxos'
+    platform: 'Nexus 9000'
+    connections:
+      cli:
+        protocol: 'ssh'
+        ip: '10.0.1.12'
+        port: 22
+        arguments:
+          connection_timeout: 30
+          read_timeout: 30
+    credentials:
+      default:
+        username: 'admin'
+        password: 'password123'
+
+# Notas sobre este archivo:
+# - Reemplazar IPs, credenciales y nombres según tu infraestructura
+# - El atributo 'os' debe ser: 'ios', 'iosxe' o 'nxos'
+# - Para producción, usar método de autenticación más seguro (bastion, vault, etc.)
+# - pyATS cargar este archivo con: topology.loader.load('testbed.yaml')
