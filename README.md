@@ -1,4 +1,4 @@
-# LACP RESILIENCY VALIDATOR - Documentación Completa
+#  LACP RESILIENCY VALIDATOR - Documentación Completa
 
 ## 📋 Descripción General
 
@@ -267,5 +267,4 @@ self.MIN_SLOTS_FOR_DISTRIBUTION = 3
 
 ---
 
-**Versión**: 1.0  
-
+**Versión**: 1.1  
