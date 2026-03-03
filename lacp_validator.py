@@ -1,469 +1,554 @@
 #!/usr/bin/env python3
 """
-LACP RESILIENCY VALIDATOR - Cisco IOS/IOS-XE/NX-OS
-Herramienta de validación de resiliencia de agregación de enlaces usando pyATS/Genie
+ETHERCHANNEL RESILIENCE SIMULATOR - Script Educativo
+
+Objetivo: Simular un fallo en un EtherChannel y validar su resiliencia.
+
+Usa pyATS y Genie para:
+  1. Conectarse a un dispositivo Cisco
+  2. Obtener la configuración de EtherChannels
+  3. Simular una caída de interfaz (shutdown)
+  4. Validar que el Puerto-Channel mantiene disponibilidad
+  5. Recuperar la interfaz y confirmar reintegración
 """
 
+import time
 import sys
-import yaml
-from typing import Dict, List, Tuple, Any
-from pathlib import Path
-from dataclasses import dataclass
-from enum import Enum
-from datetime import datetime
+from typing import Dict, List, Tuple, Optional
+
+try:
+    from pyats.topology import loader
+except ImportError:
+    print("[ERROR] pyats no instalado. Ejecuta: pip install pyats genie")
+    sys.exit(1)
 
 
-class ResiliencyStatus(Enum):
-    """Estados posibles en la validación de resiliencia"""
-    PASSED = "✓ PASSED"
-    FAILED = "✗ FAILED"
-    WARNING = "⚠ WARNING"
-    UNKNOWN = "? UNKNOWN"
+# CONFIGURACIÓN
+DISPOSITIVO = "switch_core_1"
+PROTOCOLO_ESPERADO = "lacp"
+PORT_CHANNEL_OBJETIVO = 1
+TIEMPO_ESPERA_SEGUNDOS = 3
+TESTBED_FILE = "testbed.yaml"
 
 
-@dataclass
-class PortChannelValidation:
-    """Resultado de validación de un Port-Channel"""
-    device_name: str
-    port_channel: str
-    status: ResiliencyStatus
-    num_members_up: int
-    total_members: int
-    protocol_type: str
-    is_lacp_active: bool
-    hardware_distributed: bool
-    slots_used: set
-    findings: List[str]
-    recommendations: List[str]
+# ============================================================================
+# FUNCIONES DE IMPRESIÓN (Visualización clara)
+# ============================================================================
+
+def imprimir_titulo(texto):
+    """Imprime un título decorado"""
+    print(f"\n{'='*70}")
+    print(f"  {texto}")
+    print(f"{'='*70}")
 
 
-class LACPResiliencyValidator:
+def imprimir_seccion(texto):
+    """Imprime una sección"""
+    print(f"\n[SECCIÓN] {texto}")
+    print(f"{'-'*70}")
+
+
+def imprimir_exito(texto):
+    """Mensaje de éxito"""
+    print(f"[✓ OK] {texto}")
+
+
+def imprimir_error(texto):
+    """Mensaje de error"""
+    print(f"[✗ ERROR] {texto}")
+
+
+def imprimir_info(texto):
+    """Mensaje informativo"""
+    print(f"[INFO] {texto}")
+
+
+def imprimir_advertencia(texto):
+    """Mensaje de advertencia"""
+    print(f"[⚠ ADVERTENCIA] {texto}")
+
+
+def esperar_segundos(segundos):
+    """Espera N segundos"""
+    print(f"\n⏳ Esperando {segundos} segundos...")
+    for i in range(segundos, 0, -1):
+        print(f"   {i}...", end=" ", flush=True)
+        time.sleep(1)
+    print("\n")
+
+
+# ============================================================================
+# FUNCIÓN 1: CONECTAR AL DISPOSITIVO
+# ============================================================================
+
+def conectar_equipo(nombre_dispositivo: str, testbed_file: str):
     """
-    Validador de resiliencia LACP para dispositivos Cisco.
-    Utiliza pyATS para conexión y Genie para parsing estructurado.
+    Conecta a un dispositivo usando pyATS.
+    
+    pyATS carga el testbed.yaml y maneja la conexión SSH automáticamente.
     """
+    try:
+        imprimir_info(f"Cargando testbed: {testbed_file}")
+        topologia = loader.load(testbed_file)
+        
+        dispositivo = topologia.devices[nombre_dispositivo]
+        
+        imprimir_info(f"Conectando a {nombre_dispositivo}...")
+        dispositivo.connect(log_stdout=False)
+        
+        imprimir_exito(f"Conectado a {nombre_dispositivo}")
+        return dispositivo
+        
+    except KeyError:
+        imprimir_error(f"Dispositivo '{nombre_dispositivo}' no en testbed")
+        return None
+        
+    except Exception as error:
+        imprimir_error(f"Error de conexión: {error}")
+        return None
+
+
+# ============================================================================
+# FUNCIÓN 2: APRENDER ESTADO DEL ETHERCHANNEL (Genie)
+# ============================================================================
+
+def aprender_etherchannel(dispositivo):
+    """
+    Obtiene información de EtherChannel usando Genie.
     
-    MIN_REDUNDANT_MEMBERS = 2
-    MIN_SLOTS_FOR_DISTRIBUTION = 2
+    Genie ejecuta automáticamente:
+      - IOS/IOS-XE: 'show etherchannel summary'
+      - NX-OS: 'show port-channel summary'
     
-    def __init__(self, testbed_file: str):
-        """Inicializa validador con configuración del testbed"""
-        self.testbed_file = testbed_file
-        self.testbed = None
-        self.results: Dict[str, List[PortChannelValidation]] = {}
+    Retorna un diccionario normalizado (igual en todos los SO).
+    """
+    try:
+        imprimir_info("Aprendiendo estado de EtherChannels...")
+        datos = dispositivo.learn('etherchannel')
+        imprimir_exito("Datos obtenidos")
+        return datos
         
-    def load_testbed(self) -> bool:
-        """Carga archivo testbed.yaml"""
-        try:
-            print(f"\n[INFO] Cargando testbed: {self.testbed_file}")
-            
-            if not Path(self.testbed_file).exists():
-                print(f"[ERROR] Archivo no encontrado: {self.testbed_file}")
-                return False
-            
-            with open(self.testbed_file, 'r') as f:
-                self.testbed = yaml.safe_load(f)
-            
-            print(f"[SUCCESS] Testbed cargado")
-            devices_list = list(self.testbed.get('devices', {}).keys())
-            print(f"[INFO] Dispositivos: {devices_list}")
-            return True
-            
-        except yaml.YAMLError as e:
-            print(f"[ERROR] Error YAML: {e}")
-            return False
-        except Exception as e:
-            print(f"[ERROR] Error al cargar testbed: {e}")
-            return False
+    except Exception as error:
+        imprimir_error(f"No se pudo aprender etherchannel: {error}")
+        return {}
+
+
+# ============================================================================
+# FUNCIÓN 3: EXTRAER DATOS DEL PORT-CHANNEL
+# ============================================================================
+
+def extraer_info_portchannel(datos_etherchannel: Dict, numero_pc: int) -> Optional[Dict]:
+    """
+    Extrae la información de un Port-Channel específico.
     
-    def connect_to_devices(self, device_names: List[str] = None) -> Tuple[Dict, List[str]]:
-        """
-        Conecta a dispositivos usando pyATS.
-        
-        pyATS carga la topología desde testbed.yaml y gestiona las sesiones SSH.
-        """
-        from pyats.topology import loader
-        
-        connected_devices = {}
-        errors = []
-        
-        try:
-            topology = loader.load(self.testbed_file)
-            target_devices = device_names if device_names else list(topology.devices.keys())
-            
-            print(f"\n[INFO] Conectando a {len(target_devices)} dispositivo(s)...")
-            
-            for device_name in target_devices:
-                try:
-                    device = topology.devices[device_name]
-                    print(f"  ├─ {device_name}...", end=" ", flush=True)
-                    
-                    device.connect(log_stdout=False, 
-                                 init_config_commands=[], 
-                                 init_exec_commands=[])
-                    
-                    connected_devices[device_name] = device
-                    print("✓")
-                    
-                except Exception as e:
-                    error_msg = f"No se pudo conectar: {str(e)}"
-                    print(f"✗")
-                    errors.append(error_msg)
-            
-            if connected_devices:
-                print(f"[SUCCESS] {len(connected_devices)} dispositivo(s) conectado(s)")
-            
-            return connected_devices, errors
-            
-        except Exception as e:
-            print(f"[ERROR] Conexión crítica: {e}")
-            errors.append(str(e))
-            return {}, errors
+    Busca ambos formatos: "Port-channel1" y "port-channel1"
+    """
+    if not datos_etherchannel or 'interfaces' not in datos_etherchannel:
+        return None
     
-    def learn_etherchannel(self, device) -> Dict[str, Any]:
-        """
-        Aprende etherchannel usando Genie.
-        
-        Genie parsea automáticamente según el OS (IOS/IOS-XE/NX-OS)
-        y retorna estructura normalizada:
-        
-        {
-            'interfaces': {
-                'Port-channel1': {
-                    'name': 'Port-channel1',
-                    'protocol': 'lacp',
-                    'members': {
-                        'GigabitEthernet1/0/1': {
-                            'bundled': True,
-                            'status': 'ok'
-                        }
-                    }
-                }
-            }
-        }
-        """
-        try:
-            print(f"\n[INFO] Aprendiendo etherchannel en {device.name}...", end=" ", flush=True)
-            
-            # device.learn() usa parsers específicos de Genie por SO
-            etherchannel_info = device.learn('etherchannel')
-            
-            print("✓")
-            return etherchannel_info
-            
-        except Exception as e:
-            print(f"✗")
-            print(f"  [WARN] No se pudo obtener etherchannel: {e}")
-            return {}
+    interfaces = datos_etherchannel['interfaces']
     
-    def parse_interface_slot(self, interface_name: str) -> Tuple[int, int]:
-        """
-        Extrae slot y puerto del nombre de interfaz Cisco.
-        
-        Ej: 'GigabitEthernet1/0/1' -> (1, 1)
-            'Gi2/0/5' -> (2, 5)
-        """
-        try:
-            iface = interface_name.lower()
-            
-            # Quitar prefijos comunes
-            for prefix in ['gigabitethernet', 'ethernet', 'gi', 'eth', 'e']:
-                if iface.startswith(prefix):
-                    iface = iface[len(prefix):]
-                    break
-            
-            # Parsear "slot/subif/puerto"
-            parts = iface.split('/')
-            if len(parts) >= 2:
-                slot = int(parts[0])
-                puerto = int(parts[-1])
-                return slot, puerto
-            
-        except (ValueError, IndexError):
-            pass
-        
-        return 0, 0
+    # Buscar formato IOS-XE (capitalizado)
+    nombre_pc = f"Port-channel{numero_pc}"
+    if nombre_pc in interfaces:
+        return interfaces[nombre_pc]
     
-    def validate_portchannel(self, device, pc_name: str, 
-                           pc_data: Dict[str, Any]) -> PortChannelValidation:
-        """
-        Valida resiliencia de un Port-Channel.
+    # Buscar formato NX-OS (minúscula)
+    nombre_pc = f"port-channel{numero_pc}"
+    if nombre_pc in interfaces:
+        return interfaces[nombre_pc]
+    
+    return None
+
+
+# ============================================================================
+# FUNCIÓN 4: OBTENER MIEMBROS ACTIVOS
+# ============================================================================
+
+def obtener_miembros_activos(datos_pc: Dict) -> List[str]:
+    """
+    Obtiene interfaces que están bundled (activas en el Port-Channel).
+    
+    'bundled': True = interfaz operacional
+    'bundled': False = interfaz down o desconectada
+    """
+    miembros_activos = []
+    
+    if not datos_pc or 'members' not in datos_pc:
+        return miembros_activos
+    
+    for nombre_iface, estado in datos_pc['members'].items():
+        if estado.get('bundled', False):
+            miembros_activos.append(nombre_iface)
+    
+    return miembros_activos
+
+
+# ============================================================================
+# FUNCIÓN 5: VERIFICAR PROTOCOLO
+# ============================================================================
+
+def verificar_protocolo(datos_pc: Dict, protocolo_esperado: str) -> Tuple[bool, str]:
+    """
+    Verifica si el Port-Channel usa el protocolo esperado.
+    
+    Protocolos: 'lacp', 'pagp', 'static'
+    """
+    if not datos_pc:
+        return False, "desconocido"
+    
+    protocolo_detectado = datos_pc.get('protocol', 'desconocido').lower()
+    es_correcto = protocolo_detectado == protocolo_esperado.lower()
+    
+    return es_correcto, protocolo_detectado
+
+
+# ============================================================================
+# FUNCIÓN 6: SIMULAR FALLO (SHUTDOWN)
+# ============================================================================
+
+def simular_fallo(dispositivo, interfaz: str) -> bool:
+    """
+    Ejecuta 'shutdown' en una interfaz para simular una caída.
+    
+    Comandos ejecutados:
+      interface GigabitEthernet1/0/1
+      shutdown
+    """
+    try:
+        imprimir_info(f"Ejecutando shutdown en {interfaz}...")
         
-        Criterios:
-        1. Redundancia: >= 2 miembros en estado 'up'
-        2. Distribución: Miembros en diferentes slots
-        3. Protocolo: LACP en modo active
-        """
-        findings = []
-        recommendations = []
-        status = ResiliencyStatus.PASSED
-        
-        protocol = pc_data.get('protocol', 'unknown').lower()
-        members = pc_data.get('members', {})
-        
-        # Contar miembros bundled (up)
-        members_up = [
-            iface for iface, data in members.items()
-            if data.get('bundled', False) or 
-               data.get('status', '').lower() == 'up'
+        comandos = [
+            f"interface {interfaz}",
+            "shutdown"
         ]
         
-        slots_used = set()
+        dispositivo.configure(comandos)
+        imprimir_exito(f"Interfaz {interfaz} deshabilitada")
+        return True
         
-        # Analizar cada miembro
-        for iface_name, iface_data in members.items():
-            slot, port = self.parse_interface_slot(iface_name)
-            is_bundled = iface_data.get('bundled', False)
-            iface_status = iface_data.get('status', 'unknown')
-            
-            slots_used.add(slot)
-            
-            if not is_bundled:
-                findings.append(
-                    f"  ⚠ {iface_name}: No bundled (status: {iface_status})"
-                )
-        
-        # VALIDACIÓN 1: Redundancia
-        if len(members_up) < self.MIN_REDUNDANT_MEMBERS:
-            status = ResiliencyStatus.FAILED
-            findings.append(
-                f"  ✗ Solo {len(members_up)}/{len(members)} miembro(s) up "
-                f"(mín: {self.MIN_REDUNDANT_MEMBERS})"
-            )
-            recommendations.append(
-                f"Investigar {pc_name}: verificar LACP mode, cables, STP, config"
-            )
-        else:
-            findings.append(
-                f"  ✓ Redundancia OK: {len(members_up)}/{len(members)} miembros up"
-            )
-        
-        # VALIDACIÓN 2: Distribución hardware
-        unique_slots = len([s for s in slots_used if s != 0])
-        hardware_distributed = unique_slots >= self.MIN_SLOTS_FOR_DISTRIBUTION
-        
-        if not hardware_distributed and len(members) > 1:
-            status = ResiliencyStatus.FAILED if status == ResiliencyStatus.PASSED else status
-            findings.append(
-                f"  ✗ Todos los miembros en el mismo slot/chasis"
-            )
-            recommendations.append(
-                f"Distribuir {pc_name} en diferentes slots/tarjetas. "
-                f"Actuales: {sorted(slots_used)}"
-            )
-        else:
-            findings.append(
-                f"  ✓ Distribución OK: {unique_slots} slot(s) {sorted(slots_used)}"
-            )
-        
-        # VALIDACIÓN 3: Protocolo LACP
-        is_lacp = protocol == 'lacp'
-        is_lacp_active = False
-        
-        if is_lacp:
-            lacp_modes = [
-                member_data.get('lacp_mode', 'unknown').lower() 
-                for member_data in members.values()
-            ]
-            is_lacp_active = all(m == 'active' for m in lacp_modes if m != 'unknown')
-            
-            if is_lacp_active:
-                findings.append(f"  ✓ LACP en modo active")
-            else:
-                status = ResiliencyStatus.WARNING if status == ResiliencyStatus.PASSED else status
-                findings.append(f"  ⚠ LACP: No todos en modo active")
-                recommendations.append(
-                    f"Verificar LACP {pc_name}: usar 'channel-group X mode active'"
-                )
-        else:
-            status = ResiliencyStatus.WARNING if status == ResiliencyStatus.PASSED else status
-            findings.append(f"  ✗ Protocolo: {protocol.upper()} (no LACP)")
-            recommendations.append(
-                f"Migrar {pc_name} a LACP para resiliencia dinámica"
-            )
-        
-        return PortChannelValidation(
-            device_name=device.name,
-            port_channel=pc_name,
-            status=status,
-            num_members_up=len(members_up),
-            total_members=len(members),
-            protocol_type=protocol.upper(),
-            is_lacp_active=is_lacp_active,
-            hardware_distributed=hardware_distributed,
-            slots_used=slots_used,
-            findings=findings,
-            recommendations=recommendations
-        )
-    
-    def validate_device(self, device) -> List[PortChannelValidation]:
-        """Valida todos los Port-Channels de un dispositivo"""
-        device_results = []
-        
-        print(f"\n{'='*70}")
-        print(f"VALIDANDO: {device.name}")
-        print(f"{'='*70}")
-        
-        etherchannel_info = self.learn_etherchannel(device)
-        
-        if not etherchannel_info or 'interfaces' not in etherchannel_info:
-            print(f"[INFO] No se encontraron Port-Channels")
-            return device_results
-        
-        interfaces_data = etherchannel_info.get('interfaces', {})
-        
-        if not interfaces_data:
-            print(f"[INFO] Ningún Port-Channel encontrado")
-            return device_results
-        
-        print(f"\n[INFO] {len(interfaces_data)} Port-Channel(s) encontrado(s)\n")
-        
-        # Validar cada Port-Channel
-        for pc_name, pc_data in interfaces_data.items():
-            validation = self.validate_portchannel(device, pc_name, pc_data)
-            device_results.append(validation)
-            
-            print(f"\n{pc_name}: {validation.status.value}")
-            for finding in validation.findings:
-                print(finding)
-            
-            if validation.recommendations:
-                print(f"  📋 Recomendaciones:")
-                for rec in validation.recommendations:
-                    print(f"     → {rec}")
-        
-        return device_results
-    
-    def generate_summary_report(self, all_results: Dict[str, List[PortChannelValidation]]):
-        """Genera resumen ejecutivo"""
-        print(f"\n\n{'='*70}")
-        print(f"RESUMEN - VALIDACIÓN RESILIENCIA LACP")
-        print(f"{'='*70}")
-        print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        
-        total_pcs = sum(len(pcs) for pcs in all_results.values())
-        total_passed = sum(
-            1 for pcs in all_results.values() 
-            for pc in pcs if pc.status == ResiliencyStatus.PASSED
-        )
-        total_failed = sum(
-            1 for pcs in all_results.values() 
-            for pc in pcs if pc.status == ResiliencyStatus.FAILED
-        )
-        total_warning = sum(
-            1 for pcs in all_results.values() 
-            for pc in pcs if pc.status == ResiliencyStatus.WARNING
-        )
-        
-        print(f"Total Port-Channels: {total_passed + total_failed + total_warning}")
-        print(f"  ✓ PASSED:  {total_passed}")
-        print(f"  ⚠ WARNING: {total_warning}")
-        print(f"  ✗ FAILED:  {total_failed}\n")
-        
-        if total_failed == 0 and total_warning == 0:
-            health = "EXCELENTE"
-            symbol = "✓"
-        elif total_failed == 0:
-            health = "BUENA (con advertencias)"
-            symbol = "⚠"
-        else:
-            health = "CRÍTICA"
-            symbol = "✗"
-        
-        print(f"{symbol} Estado General: {health}\n")
-        
-        # Tabla detalle
-        print(f"{'─'*70}")
-        print(f"{'DISPOSITIVO':<20} {'PORT-CHANNEL':<18} {'ESTADO':<12} {'RED.':<6}")
-        print(f"{'─'*70}")
-        
-        for device_name, validations in all_results.items():
-            for i, val in enumerate(validations):
-                device_col = device_name if i == 0 else ""
-                red_status = "✓" if val.num_members_up >= 2 else "✗"
-                
-                print(
-                    f"{device_col:<20} {val.port_channel:<18} "
-                    f"{val.status.value:<12} {red_status:<6}"
-                )
-        
-        print(f"{'─'*70}")
-        
-        # Acciones requeridas
-        critical_recs = []
-        for device_name, validations in all_results.items():
-            for val in validations:
-                if val.status == ResiliencyStatus.FAILED and val.recommendations:
-                    for rec in val.recommendations:
-                        critical_recs.append(f"[{val.port_channel}] {rec}")
-        
-        if critical_recs:
-            print(f"\n🔴 ACCIONES REQUERIDAS:\n")
-            for i, rec in enumerate(critical_recs, 1):
-                print(f"{i}. {rec}")
-        else:
-            print(f"\n✓ No se requieren acciones inmediatas\n")
-    
-    def validate(self, device_names: List[str] = None) -> bool:
-        """Orquesta flujo completo de validación"""
-        try:
-            if not self.load_testbed():
-                return False
-            
-            devices, errors = self.connect_to_devices(device_names)
-            
-            if not devices:
-                print(f"\n[ERROR] No fue posible conectar a dispositivos")
-                return False
-            
-            all_results = {}
-            for device_name, device in devices.items():
-                results = self.validate_device(device)
-                all_results[device_name] = results
-                
-                try:
-                    device.disconnect()
-                except:
-                    pass
-            
-            self.results = all_results
-            self.generate_summary_report(all_results)
-            
-            return True
-            
-        except KeyboardInterrupt:
-            print(f"\n[WARN] Validación interrumpida")
-            return False
-        except Exception as e:
-            print(f"\n[ERROR] Error: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+    except Exception as error:
+        imprimir_error(f"No se pudo ejecutar shutdown: {error}")
+        return False
 
+
+# ============================================================================
+# FUNCIÓN 7: RECUPERAR INTERFAZ (NO SHUTDOWN)
+# ============================================================================
+
+def recuperar_interfaz(dispositivo, interfaz: str) -> bool:
+    """
+    Ejecuta 'no shutdown' para rehabilitar la interfaz.
+    
+    Comandos ejecutados:
+      interface GigabitEthernet1/0/1
+      no shutdown
+    """
+    try:
+        imprimir_info(f"Ejecutando no shutdown en {interfaz}...")
+        
+        comandos = [
+            f"interface {interfaz}",
+            "no shutdown"
+        ]
+        
+        dispositivo.configure(comandos)
+        imprimir_exito(f"Interfaz {interfaz} habilitada")
+        return True
+        
+    except Exception as error:
+        imprimir_error(f"No se pudo ejecutar no shutdown: {error}")
+        return False
+
+
+# ============================================================================
+# FUNCIÓN 8: VALIDAR RESILIENCIA
+# ============================================================================
+
+def validar_resiliencia(
+    miembros_antes: List[str],
+    miembros_despues: List[str],
+    interfaz_deshabilitada: str
+) -> bool:
+    """
+    Valida si el Port-Channel mantiene resiliencia.
+    
+    ✓ RESILIENTE: Tenía 2+ miembros, ahora tiene 1+ miembros
+    ✗ NO RESILIENTE: Tenía 1 miembro y ahora tiene 0 miembros
+    """
+    
+    imprimir_seccion("Análisis de Resiliencia")
+    
+    print(f"Miembros ANTES:  {len(miembros_antes)} → {miembros_antes}")
+    print(f"Miembros DESPUÉS: {len(miembros_despues)} → {miembros_despues}")
+    
+    # Verificar si hay miembros restantes
+    if len(miembros_despues) == 0:
+        imprimir_error("Port-Channel colapsó (0 miembros)")
+        return False
+    
+    imprimir_exito(f"Port-Channel operacional ({len(miembros_despues)} miembro(s))")
+    
+    # Verificar que interfaz fue removida
+    if interfaz_deshabilitada in miembros_despues:
+        imprimir_advertencia("Interfaz aún en lista (puede tardar)")
+    else:
+        imprimir_exito("Interfaz removida correctamente")
+    
+    return True
+
+
+# ============================================================================
+# FUNCIÓN 9: GENERAR REPORTE FINAL
+# ============================================================================
+
+def generar_reporte_final(
+    dispositivo_nombre: str,
+    numero_pc: int,
+    protocolo_esperado: str,
+    protocolo_detectado: str,
+    interfaz_testeada: str,
+    resiliencia_ok: bool,
+    miembros_antes: int,
+    miembros_con_fallo: int,
+    miembros_recuperados: int
+) -> bool:
+    """
+    Genera reporte visual final del test.
+    """
+    
+    imprimir_titulo("REPORTE FINAL - TEST DE RESILIENCIA")
+    
+    print(f"\n📋 DISPOSITIVO:")
+    print(f"   Nombre: {dispositivo_nombre}")
+    print(f"   Port-Channel: {numero_pc}")
+    
+    print(f"\n🔧 VALIDACIÓN DE PROTOCOLO:")
+    protocolo_ok = protocolo_detectado.upper() == protocolo_esperado.upper()
+    
+    if protocolo_ok:
+        print(f"   Esperado:  {protocolo_esperado.upper()}")
+        print(f"   Detectado: {protocolo_detectado.upper()}")
+        print(f"   ✓ PROTOCOLO CORRECTO")
+    else:
+        print(f"   Esperado:  {protocolo_esperado.upper()}")
+        print(f"   Detectado: {protocolo_detectado.upper()}")
+        print(f"   ✗ PROTOCOLO INCORRECTO")
+    
+    print(f"\n⚡ SIMULACIÓN DE FALLO:")
+    print(f"   Interfaz testeada: {interfaz_testeada}")
+    print(f"   Miembros antes:     {miembros_antes}")
+    print(f"   Miembros con fallo: {miembros_con_fallo}")
+    print(f"   Miembros recuperados: {miembros_recuperados}")
+    
+    print(f"\n🛡️  RESILIENCIA:")
+    if resiliencia_ok:
+        print(f"   ✓ Port-Channel SOBREVIVIÓ al fallo (RESILIENTE)")
+        print(f"   ✓ Tráfico mantenido a través de otros miembros")
+    else:
+        print(f"   ✗ Port-Channel COLAPSÓ (NO RESILIENTE)")
+        print(f"   ✗ Pérdida de conectividad")
+    
+    print(f"\n📊 CONCLUSIÓN:")
+    
+    if protocolo_ok and resiliencia_ok:
+        print(f"   ✓✓✓ TEST PASADO: Protocolo OK + Resiliencia OK")
+        return True
+    elif protocolo_ok and not resiliencia_ok:
+        print(f"   ⚠ TEST PARCIAL: Protocolo OK pero Resiliencia comprometida")
+        return False
+    else:
+        print(f"   ✗✗✗ TEST FALLIDO: Protocolo incorrecto")
+        return False
+
+
+# ============================================================================
+# FUNCIÓN 10: DESCONECTAR
+# ============================================================================
+
+def desconectar_equipo(dispositivo):
+    """Cierra la conexión SSH"""
+    try:
+        dispositivo.disconnect()
+        imprimir_exito("Conexión cerrada")
+    except Exception as error:
+        imprimir_advertencia(f"Error al desconectar: {error}")
+
+
+# ============================================================================
+# FUNCIÓN PRINCIPAL
+# ============================================================================
 
 def main():
-    """Punto de entrada principal"""
-    print("""
-    ╔════════════════════════════════════════════════════════════════╗
-    ║         LACP RESILIENCY VALIDATOR - Cisco Devices            ║
-    ║      IOS/IOS-XE/NX-OS Port-Channel Analysis with pyATS       ║
-    ╚════════════════════════════════════════════════════════════════╝
-    """)
+    """
+    Orquesta toda la simulación de resiliencia.
     
-    TESTBED_FILE = "testbed.yaml"
+    Flujo:
+      1. Conectar
+      2. Aprender estado inicial
+      3. Verificar protocolo
+      4. Simular fallo
+      5. Validar resiliencia
+      6. Recuperar interfaz
+      7. Reporte final
+    """
     
-    validator = LACPResiliencyValidator(TESTBED_FILE)
+    imprimir_titulo("TEST DE RESILIENCIA DE ETHERCHANNEL")
     
-    try:
-        success = validator.validate()
-        sys.exit(0 if success else 1)
-        
-    except Exception as e:
-        print(f"\n[ERROR] Excepción: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(2)
+    print(f"\nConfiguración:")
+    print(f"  - Dispositivo: {DISPOSITIVO}")
+    print(f"  - Protocolo: {PROTOCOLO_ESPERADO.upper()}")
+    print(f"  - Port-Channel: {PORT_CHANNEL_OBJETIVO}")
+    
+    # PASO 1: Conectar
+    imprimir_seccion("PASO 1: Conectar al Dispositivo")
+    dispositivo = conectar_equipo(DISPOSITIVO, TESTBED_FILE)
+    
+    if dispositivo is None:
+        imprimir_error("Conexión fallida")
+        return False
+    
+    # PASO 2: Aprender estado inicial
+    imprimir_seccion("PASO 2: Aprender Estado Inicial")
+    datos_etherchannel = aprender_etherchannel(dispositivo)
+    
+    if not datos_etherchannel:
+        imprimir_error("No se obtuvieron datos")
+        desconectar_equipo(dispositivo)
+        return False
+    
+    # PASO 3: Extraer Port-Channel
+    imprimir_seccion(f"PASO 3: Extraer Port-Channel {PORT_CHANNEL_OBJETIVO}")
+    datos_pc = extraer_info_portchannel(datos_etherchannel, PORT_CHANNEL_OBJETIVO)
+    
+    if datos_pc is None:
+        imprimir_error(f"Port-Channel {PORT_CHANNEL_OBJETIVO} no encontrado")
+        desconectar_equipo(dispositivo)
+        return False
+    
+    imprimir_exito(f"Port-Channel {PORT_CHANNEL_OBJETIVO} encontrado")
+    
+    # PASO 4: Verificar protocolo
+    imprimir_seccion("PASO 4: Verificar Protocolo")
+    protocolo_ok, protocolo_detectado = verificar_protocolo(
+        datos_pc,
+        PROTOCOLO_ESPERADO
+    )
+    
+    print(f"Esperado:  {PROTOCOLO_ESPERADO.upper()}")
+    print(f"Detectado: {protocolo_detectado.upper()}")
+    
+    if not protocolo_ok:
+        imprimir_error("PROTOCOLO INCORRECTO - Script finaliza")
+        desconectar_equipo(dispositivo)
+        return False
+    
+    imprimir_exito("Protocolo correcto")
+    
+    # PASO 5: Listar miembros
+    imprimir_seccion("PASO 5: Listar Miembros Activos")
+    miembros_antes = obtener_miembros_activos(datos_pc)
+    
+    print(f"Miembros: {len(miembros_antes)}")
+    for miembro in miembros_antes:
+        print(f"  • {miembro}")
+    
+    if len(miembros_antes) < 1:
+        imprimir_error("No hay miembros para probar")
+        desconectar_equipo(dispositivo)
+        return False
+    
+    interfaz_a_fallar = miembros_antes[0]
+    
+    # PASO 6: Simular fallo
+    imprimir_seccion("PASO 6: Simular Fallo (Shutdown)")
+    fallo_ok = simular_fallo(dispositivo, interfaz_a_fallar)
+    
+    if not fallo_ok:
+        desconectar_equipo(dispositivo)
+        return False
+    
+    esperar_segundos(TIEMPO_ESPERA_SEGUNDOS)
+    
+    # PASO 7: Aprender estado después del fallo
+    imprimir_seccion("PASO 7: Verificar Estado Después del Fallo")
+    datos_etherchannel_fallo = aprender_etherchannel(dispositivo)
+    datos_pc_fallo = extraer_info_portchannel(datos_etherchannel_fallo, PORT_CHANNEL_OBJETIVO)
+    miembros_despues_fallo = obtener_miembros_activos(datos_pc_fallo)
+    
+    # PASO 8: Validar resiliencia
+    imprimir_seccion("PASO 8: Validar Resiliencia")
+    resiliencia_ok = validar_resiliencia(
+        miembros_antes,
+        miembros_despues_fallo,
+        interfaz_a_fallar
+    )
+    
+    # PASO 9: Recuperar
+    imprimir_seccion("PASO 9: Recuperar Interfaz (No Shutdown)")
+    recuperacion_ok = recuperar_interfaz(dispositivo, interfaz_a_fallar)
+    
+    esperar_segundos(TIEMPO_ESPERA_SEGUNDOS)
+    
+    # PASO 10: Verificar reintegración
+    imprimir_seccion("PASO 10: Verificar Reintegración")
+    datos_etherchannel_recuperado = aprender_etherchannel(dispositivo)
+    datos_pc_recuperado = extraer_info_portchannel(
+        datos_etherchannel_recuperado,
+        PORT_CHANNEL_OBJETIVO
+    )
+    miembros_recuperados = obtener_miembros_activos(datos_pc_recuperado)
+    
+    print(f"Miembros recuperados: {len(miembros_recuperados)}")
+    for miembro in miembros_recuperados:
+        print(f"  • {miembro}")
+    
+    if len(miembros_recuperados) == len(miembros_antes):
+        imprimir_exito("Interfaz reintegrada correctamente")
+    else:
+        imprimir_advertencia("Reintegración aún en progreso")
+    
+    # PASO 11: Reporte final
+    test_pasado = generar_reporte_final(
+        DISPOSITIVO,
+        PORT_CHANNEL_OBJETIVO,
+        PROTOCOLO_ESPERADO,
+        protocolo_detectado,
+        interfaz_a_fallar,
+        resiliencia_ok,
+        len(miembros_antes),
+        len(miembros_despues_fallo),
+        len(miembros_recuperados)
+    )
+    
+    # Limpiar
+    imprimir_seccion("Limpiar")
+    desconectar_equipo(dispositivo)
+    
+    return test_pasado
 
+
+# ============================================================================
+# PUNTO DE ENTRADA
+# ============================================================================
 
 if __name__ == "__main__":
-    main()
+    try:
+        resultado = main()
+        
+        if resultado:
+            imprimir_exito("Script completado exitosamente")
+            sys.exit(0)
+        else:
+            imprimir_error("Script completado con advertencias/errores")
+            sys.exit(1)
+            
+    except KeyboardInterrupt:
+        imprimir_advertencia("Script interrumpido por usuario")
+        sys.exit(2)
+        
+    except Exception as error:
+        imprimir_error(f"Excepción: {error}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(3)
