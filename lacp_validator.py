@@ -14,7 +14,7 @@ from typing import Dict, List, Tuple, Optional
 try:
     from pyats.topology import loader
 except ImportError:
-    print("[ERROR] pyats no instalado. Ejecuta: pip install pyats genie")
+    print("[ERROR] pip install pyats genie")
     sys.exit(1)
 
 
