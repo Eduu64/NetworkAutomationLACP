@@ -18,16 +18,18 @@ except ImportError:
     sys.exit(1)
 
 
-# CONFIGURACIÓN
-DISPOSITIVO = "switch_core_1"
-PROTOCOLO_ESPERADO = "lacp"
-PORT_CHANNEL_OBJETIVO = 1
-TIEMPO_ESPERA_SEGUNDOS = 3
-TESTBED_FILE = "testbed.yaml"
+# ============================================================================
+# CONFIGURACIÓN GLOBAL
+# ============================================================================
+
+PROTOCOLO_ESPERADO = "lacp"            # "lacp" o "pagp"
+PORT_CHANNEL_OBJETIVO = 1              # Número del Port-Channel
+TIEMPO_ESPERA_SEGUNDOS = 3             # Segundos entre acciones
+TESTBED_FILE = "testbed.yaml"          # Ruta al archivo testbed
 
 
 # ============================================================================
-# FUNCIONES DE IMPRESIÓN (Visualización clara)
+# FUNCIONES DE IMPRESIÓN
 # ============================================================================
 
 def imprimir_titulo(texto):
@@ -63,6 +65,11 @@ def imprimir_advertencia(texto):
     print(f"[⚠ ADVERTENCIA] {texto}")
 
 
+def imprimir_pregunta(texto):
+    """Mensaje de pregunta"""
+    print(f"\n[?] {texto}")
+
+
 def esperar_segundos(segundos):
     """Espera N segundos"""
     print(f"\n⏳ Esperando {segundos} segundos...")
@@ -73,19 +80,91 @@ def esperar_segundos(segundos):
 
 
 # ============================================================================
+# FUNCIÓN: MOSTRAR MENÚ INTERACTIVO
+# ============================================================================
+
+def mostrar_menu_dispositivos(testbed_file: str) -> Optional[List[str]]:
+    """
+    Muestra un menú interactivo para elegir dispositivos.
+    
+    Opciones:
+      1. Validar un dispositivo específico
+      2. Validar todos los dispositivos
+      3. Salir
+    
+    Retorna:
+      Lista de dispositivos a validar, o None si el usuario cancela
+    """
+    try:
+        imprimir_info(f"Cargando testbed desde: {testbed_file}")
+        topologia = loader.load(testbed_file)
+        dispositivos_disponibles = list(topologia.devices.keys())
+        
+        if not dispositivos_disponibles:
+            imprimir_error("No hay dispositivos en el testbed")
+            return None
+        
+        imprimir_titulo("SELECCIONAR DISPOSITIVOS PARA VALIDAR")
+        
+        print(f"\nDispositivos disponibles en {testbed_file}:")
+        for i, dispositivo in enumerate(dispositivos_disponibles, 1):
+            print(f"  {i}. {dispositivo}")
+        
+        print(f"\nOpciones:")
+        print(f"  [A] Validar un dispositivo específico")
+        print(f"  [B] Validar TODOS los dispositivos")
+        print(f"  [S] Salir")
+        
+        imprimir_pregunta("Elige una opción (A/B/S):")
+        opcion = input("  → ").strip().upper()
+        
+        if opcion == "S":
+            imprimir_info("Saliendo...")
+            return None
+        
+        elif opcion == "A":
+            print(f"\nDispositivos disponibles:")
+            for i, dispositivo in enumerate(dispositivos_disponibles, 1):
+                print(f"  {i}. {dispositivo}")
+            
+            imprimir_pregunta("Ingresa el número del dispositivo (1-{})".format(
+                len(dispositivos_disponibles)
+            ))
+            
+            try:
+                numero = int(input("  → "))
+                if 1 <= numero <= len(dispositivos_disponibles):
+                    dispositivo_seleccionado = dispositivos_disponibles[numero - 1]
+                    imprimir_exito(f"Seleccionado: {dispositivo_seleccionado}")
+                    return [dispositivo_seleccionado]
+                else:
+                    imprimir_error("Número fuera de rango")
+                    return None
+            except ValueError:
+                imprimir_error("Debes ingresar un número")
+                return None
+        
+        elif opcion == "B":
+            imprimir_exito(f"Validando TODOS los dispositivos: {dispositivos_disponibles}")
+            return dispositivos_disponibles
+        
+        else:
+            imprimir_error("Opción no válida")
+            return None
+    
+    except Exception as error:
+        imprimir_error(f"Error al cargar testbed: {error}")
+        return None
+
+
+# ============================================================================
 # FUNCIÓN 1: CONECTAR AL DISPOSITIVO
 # ============================================================================
 
 def conectar_equipo(nombre_dispositivo: str, testbed_file: str):
-    """
-    Conecta a un dispositivo usando pyATS.
-    
-    pyATS carga el testbed.yaml y maneja la conexión SSH automáticamente.
-    """
+    """Conecta a un dispositivo usando pyATS"""
     try:
-        imprimir_info(f"Cargando testbed: {testbed_file}")
         topologia = loader.load(testbed_file)
-        
         dispositivo = topologia.devices[nombre_dispositivo]
         
         imprimir_info(f"Conectando a {nombre_dispositivo}...")
@@ -104,19 +183,11 @@ def conectar_equipo(nombre_dispositivo: str, testbed_file: str):
 
 
 # ============================================================================
-# FUNCIÓN 2: APRENDER ESTADO DEL ETHERCHANNEL (Genie)
+# FUNCIÓN 2: APRENDER ETHERCHANNEL
 # ============================================================================
 
 def aprender_etherchannel(dispositivo):
-    """
-    Obtiene información de EtherChannel usando Genie.
-    
-    Genie ejecuta automáticamente:
-      - IOS/IOS-XE: 'show etherchannel summary'
-      - NX-OS: 'show port-channel summary'
-    
-    Retorna un diccionario normalizado (igual en todos los SO).
-    """
+    """Obtiene información de EtherChannel usando Genie"""
     try:
         imprimir_info("Aprendiendo estado de EtherChannels...")
         datos = dispositivo.learn('etherchannel')
@@ -129,15 +200,11 @@ def aprender_etherchannel(dispositivo):
 
 
 # ============================================================================
-# FUNCIÓN 3: EXTRAER DATOS DEL PORT-CHANNEL
+# FUNCIÓN 3: EXTRAER PORT-CHANNEL
 # ============================================================================
 
 def extraer_info_portchannel(datos_etherchannel: Dict, numero_pc: int) -> Optional[Dict]:
-    """
-    Extrae la información de un Port-Channel específico.
-    
-    Busca ambos formatos: "Port-channel1" y "port-channel1"
-    """
+    """Extrae información de un Port-Channel específico"""
     if not datos_etherchannel or 'interfaces' not in datos_etherchannel:
         return None
     
@@ -161,12 +228,7 @@ def extraer_info_portchannel(datos_etherchannel: Dict, numero_pc: int) -> Option
 # ============================================================================
 
 def obtener_miembros_activos(datos_pc: Dict) -> List[str]:
-    """
-    Obtiene interfaces que están bundled (activas en el Port-Channel).
-    
-    'bundled': True = interfaz operacional
-    'bundled': False = interfaz down o desconectada
-    """
+    """Obtiene interfaces que están bundled (activas)"""
     miembros_activos = []
     
     if not datos_pc or 'members' not in datos_pc:
@@ -184,11 +246,7 @@ def obtener_miembros_activos(datos_pc: Dict) -> List[str]:
 # ============================================================================
 
 def verificar_protocolo(datos_pc: Dict, protocolo_esperado: str) -> Tuple[bool, str]:
-    """
-    Verifica si el Port-Channel usa el protocolo esperado.
-    
-    Protocolos: 'lacp', 'pagp', 'static'
-    """
+    """Verifica si el Port-Channel usa el protocolo esperado"""
     if not datos_pc:
         return False, "desconocido"
     
@@ -199,17 +257,11 @@ def verificar_protocolo(datos_pc: Dict, protocolo_esperado: str) -> Tuple[bool, 
 
 
 # ============================================================================
-# FUNCIÓN 6: SIMULAR FALLO (SHUTDOWN)
+# FUNCIÓN 6: SIMULAR FALLO
 # ============================================================================
 
 def simular_fallo(dispositivo, interfaz: str) -> bool:
-    """
-    Ejecuta 'shutdown' en una interfaz para simular una caída.
-    
-    Comandos ejecutados:
-      interface GigabitEthernet1/0/1
-      shutdown
-    """
+    """Ejecuta shutdown en una interfaz"""
     try:
         imprimir_info(f"Ejecutando shutdown en {interfaz}...")
         
@@ -228,17 +280,11 @@ def simular_fallo(dispositivo, interfaz: str) -> bool:
 
 
 # ============================================================================
-# FUNCIÓN 7: RECUPERAR INTERFAZ (NO SHUTDOWN)
+# FUNCIÓN 7: RECUPERAR INTERFAZ
 # ============================================================================
 
 def recuperar_interfaz(dispositivo, interfaz: str) -> bool:
-    """
-    Ejecuta 'no shutdown' para rehabilitar la interfaz.
-    
-    Comandos ejecutados:
-      interface GigabitEthernet1/0/1
-      no shutdown
-    """
+    """Ejecuta no shutdown para rehabilitar la interfaz"""
     try:
         imprimir_info(f"Ejecutando no shutdown en {interfaz}...")
         
@@ -265,12 +311,7 @@ def validar_resiliencia(
     miembros_despues: List[str],
     interfaz_deshabilitada: str
 ) -> bool:
-    """
-    Valida si el Port-Channel mantiene resiliencia.
-    
-    ✓ RESILIENTE: Tenía 2+ miembros, ahora tiene 1+ miembros
-    ✗ NO RESILIENTE: Tenía 1 miembro y ahora tiene 0 miembros
-    """
+    """Valida si el Port-Channel mantiene resiliencia"""
     
     imprimir_seccion("Análisis de Resiliencia")
     
@@ -294,7 +335,7 @@ def validar_resiliencia(
 
 
 # ============================================================================
-# FUNCIÓN 9: GENERAR REPORTE FINAL
+# FUNCIÓN 9: GENERAR REPORTE
 # ============================================================================
 
 def generar_reporte_final(
@@ -308,9 +349,7 @@ def generar_reporte_final(
     miembros_con_fallo: int,
     miembros_recuperados: int
 ) -> bool:
-    """
-    Genera reporte visual final del test.
-    """
+    """Genera reporte visual final del test"""
     
     imprimir_titulo("REPORTE FINAL - TEST DE RESILIENCIA")
     
@@ -371,39 +410,32 @@ def desconectar_equipo(dispositivo):
 
 
 # ============================================================================
-# FUNCIÓN PRINCIPAL
+# FUNCIÓN PRINCIPAL: VALIDAR UN DISPOSITIVO
 # ============================================================================
 
-def main():
+def validar_dispositivo(nombre_dispositivo: str) -> bool:
     """
-    Orquesta toda la simulación de resiliencia.
+    Ejecuta la validación completa para UN dispositivo.
     
-    Flujo:
-      1. Conectar
-      2. Aprender estado inicial
-      3. Verificar protocolo
-      4. Simular fallo
-      5. Validar resiliencia
-      6. Recuperar interfaz
-      7. Reporte final
+    Retorna: True si test pasó, False si falló o no se pudo ejecutar
     """
     
-    imprimir_titulo("TEST DE RESILIENCIA DE ETHERCHANNEL")
+    imprimir_titulo(f"VALIDANDO: {nombre_dispositivo}")
     
     print(f"\nConfiguración:")
-    print(f"  - Dispositivo: {DISPOSITIVO}")
+    print(f"  - Dispositivo: {nombre_dispositivo}")
     print(f"  - Protocolo: {PROTOCOLO_ESPERADO.upper()}")
     print(f"  - Port-Channel: {PORT_CHANNEL_OBJETIVO}")
     
-    # PASO 1: Conectar
+    # Paso 1: Conectar
     imprimir_seccion("PASO 1: Conectar al Dispositivo")
-    dispositivo = conectar_equipo(DISPOSITIVO, TESTBED_FILE)
+    dispositivo = conectar_equipo(nombre_dispositivo, TESTBED_FILE)
     
     if dispositivo is None:
-        imprimir_error("Conexión fallida")
+        imprimir_error("Conexión fallida - saltando este dispositivo")
         return False
     
-    # PASO 2: Aprender estado inicial
+    # Paso 2: Aprender estado inicial
     imprimir_seccion("PASO 2: Aprender Estado Inicial")
     datos_etherchannel = aprender_etherchannel(dispositivo)
     
@@ -412,7 +444,7 @@ def main():
         desconectar_equipo(dispositivo)
         return False
     
-    # PASO 3: Extraer Port-Channel
+    # Paso 3: Extraer Port-Channel
     imprimir_seccion(f"PASO 3: Extraer Port-Channel {PORT_CHANNEL_OBJETIVO}")
     datos_pc = extraer_info_portchannel(datos_etherchannel, PORT_CHANNEL_OBJETIVO)
     
@@ -423,7 +455,7 @@ def main():
     
     imprimir_exito(f"Port-Channel {PORT_CHANNEL_OBJETIVO} encontrado")
     
-    # PASO 4: Verificar protocolo
+    # Paso 4: Verificar protocolo
     imprimir_seccion("PASO 4: Verificar Protocolo")
     protocolo_ok, protocolo_detectado = verificar_protocolo(
         datos_pc,
@@ -434,13 +466,13 @@ def main():
     print(f"Detectado: {protocolo_detectado.upper()}")
     
     if not protocolo_ok:
-        imprimir_error("PROTOCOLO INCORRECTO - Script finaliza")
+        imprimir_error("PROTOCOLO INCORRECTO - Script finaliza para este dispositivo")
         desconectar_equipo(dispositivo)
         return False
     
     imprimir_exito("Protocolo correcto")
     
-    # PASO 5: Listar miembros
+    # Paso 5: Listar miembros
     imprimir_seccion("PASO 5: Listar Miembros Activos")
     miembros_antes = obtener_miembros_activos(datos_pc)
     
@@ -455,7 +487,7 @@ def main():
     
     interfaz_a_fallar = miembros_antes[0]
     
-    # PASO 6: Simular fallo
+    # Paso 6: Simular fallo
     imprimir_seccion("PASO 6: Simular Fallo (Shutdown)")
     fallo_ok = simular_fallo(dispositivo, interfaz_a_fallar)
     
@@ -465,13 +497,13 @@ def main():
     
     esperar_segundos(TIEMPO_ESPERA_SEGUNDOS)
     
-    # PASO 7: Aprender estado después del fallo
+    # Paso 7: Aprender con fallo
     imprimir_seccion("PASO 7: Verificar Estado Después del Fallo")
     datos_etherchannel_fallo = aprender_etherchannel(dispositivo)
     datos_pc_fallo = extraer_info_portchannel(datos_etherchannel_fallo, PORT_CHANNEL_OBJETIVO)
     miembros_despues_fallo = obtener_miembros_activos(datos_pc_fallo)
     
-    # PASO 8: Validar resiliencia
+    # Paso 8: Validar resiliencia
     imprimir_seccion("PASO 8: Validar Resiliencia")
     resiliencia_ok = validar_resiliencia(
         miembros_antes,
@@ -479,13 +511,13 @@ def main():
         interfaz_a_fallar
     )
     
-    # PASO 9: Recuperar
+    # Paso 9: Recuperar
     imprimir_seccion("PASO 9: Recuperar Interfaz (No Shutdown)")
     recuperacion_ok = recuperar_interfaz(dispositivo, interfaz_a_fallar)
     
     esperar_segundos(TIEMPO_ESPERA_SEGUNDOS)
     
-    # PASO 10: Verificar reintegración
+    # Paso 10: Verificar reintegración
     imprimir_seccion("PASO 10: Verificar Reintegración")
     datos_etherchannel_recuperado = aprender_etherchannel(dispositivo)
     datos_pc_recuperado = extraer_info_portchannel(
@@ -503,9 +535,9 @@ def main():
     else:
         imprimir_advertencia("Reintegración aún en progreso")
     
-    # PASO 11: Reporte final
+    # Paso 11: Reporte final
     test_pasado = generar_reporte_final(
-        DISPOSITIVO,
+        nombre_dispositivo,
         PORT_CHANNEL_OBJETIVO,
         PROTOCOLO_ESPERADO,
         protocolo_detectado,
@@ -524,6 +556,98 @@ def main():
 
 
 # ============================================================================
+# FUNCIÓN PRINCIPAL: VALIDAR MÚLTIPLES DISPOSITIVOS
+# ============================================================================
+
+def validar_multiples_dispositivos(dispositivos: List[str]) -> Dict[str, bool]:
+    """
+    Valida múltiples dispositivos y retorna resumen.
+    
+    Retorna: Diccionario con {dispositivo: test_pasado}
+    """
+    
+    resultados = {}
+    total = len(dispositivos)
+    
+    for i, dispositivo in enumerate(dispositivos, 1):
+        print(f"\n\n{'#'*70}")
+        print(f"# DISPOSITIVO {i} DE {total}: {dispositivo}")
+        print(f"{'#'*70}\n")
+        
+        resultado = validar_dispositivo(dispositivo)
+        resultados[dispositivo] = resultado
+        
+        # Pequeña pausa entre dispositivos
+        if i < total:
+            esperar_segundos(2)
+    
+    return resultados
+
+
+# ============================================================================
+# FUNCIÓN: RESUMEN FINAL MULTI-DISPOSITIVO
+# ============================================================================
+
+def imprimir_resumen_final(resultados: Dict[str, bool]):
+    """Imprime resumen de validaciones de múltiples dispositivos"""
+    
+    imprimir_titulo("RESUMEN FINAL - VALIDACIÓN DE TODOS LOS DISPOSITIVOS")
+    
+    total = len(resultados)
+    pasados = sum(1 for v in resultados.values() if v)
+    fallidos = total - pasados
+    
+    print(f"\nResultados:")
+    print(f"  Total dispositivos: {total}")
+    print(f"  ✓ Tests PASADOS:    {pasados}")
+    print(f"  ✗ Tests FALLIDOS:   {fallidos}")
+    
+    print(f"\nDetalle por dispositivo:")
+    for dispositivo, resultado in resultados.items():
+        if resultado:
+            print(f"  ✓ {dispositivo:<30} PASADO")
+        else:
+            print(f"  ✗ {dispositivo:<30} FALLIDO")
+    
+    if fallidos == 0:
+        print(f"\n✓✓✓ TODAS LAS VALIDACIONES PASARON")
+    elif pasados > 0:
+        print(f"\n⚠ VALIDACIÓN PARCIAL: {pasados} de {total} pasaron")
+    else:
+        print(f"\n✗✗✗ TODAS LAS VALIDACIONES FALLARON")
+
+
+# ============================================================================
+# PUNTO DE ENTRADA PRINCIPAL
+# ============================================================================
+
+def main():
+    """Punto de entrada: Menú interactivo para elegir validación"""
+    
+    imprimir_titulo("ETHERCHANNEL RESILIENCE SIMULATOR - Versión Mejorada")
+    
+    # Mostrar menú y obtener dispositivos a validar
+    dispositivos_a_validar = mostrar_menu_dispositivos(TESTBED_FILE)
+    
+    if dispositivos_a_validar is None:
+        imprimir_error("No se seleccionaron dispositivos")
+        return False
+    
+    # Validar dispositivos
+    if len(dispositivos_a_validar) == 1:
+        # Validar un solo dispositivo
+        resultado = validar_dispositivo(dispositivos_a_validar[0])
+        return resultado
+    else:
+        # Validar múltiples dispositivos
+        resultados = validar_multiples_dispositivos(dispositivos_a_validar)
+        imprimir_resumen_final(resultados)
+        
+        # Retornar True si al menos uno pasó
+        return any(resultados.values())
+
+
+# ============================================================================
 # PUNTO DE ENTRADA
 # ============================================================================
 
@@ -532,14 +656,14 @@ if __name__ == "__main__":
         resultado = main()
         
         if resultado:
-            imprimir_exito("Script completado exitosamente")
+            imprimir_exito("Validación(es) completada(s) exitosamente")
             sys.exit(0)
         else:
-            imprimir_error("Script completado con advertencias/errores")
+            imprimir_error("Validación(es) completada(s) con advertencias/errores")
             sys.exit(1)
             
     except KeyboardInterrupt:
-        imprimir_advertencia("Script interrumpido por usuario")
+        imprimir_advertencia("Validación interrumpida por usuario")
         sys.exit(2)
         
     except Exception as error:
