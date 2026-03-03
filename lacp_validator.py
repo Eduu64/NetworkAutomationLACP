@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
 """
-ETHERCHANNEL RESILIENCE SIMULATOR - Script Educativo
-
-Objetivo: Simular un fallo en un EtherChannel y validar su resiliencia.
-
-Usa pyATS y Genie para:
   1. Conectarse a un dispositivo Cisco
   2. Obtener la configuración de EtherChannels
   3. Simular una caída de interfaz (shutdown)
