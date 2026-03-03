@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-  1. Conectarse a un dispositivo Cisco
-  2. Obtener la configuración de EtherChannels
-  3. Simular una caída de interfaz (shutdown)
-  4. Validar que el Puerto-Channel mantiene disponibilidad
-  5. Recuperar la interfaz y confirmar reintegración
-"""
 
 import time
 import sys
@@ -22,10 +15,10 @@ except ImportError:
 # CONFIGURACIÓN GLOBAL
 # ============================================================================
 
-PROTOCOLO_ESPERADO = "lacp"            # "lacp" o "pagp"
-PORT_CHANNEL_OBJETIVO = 1              # Número del Port-Channel
-TIEMPO_ESPERA_SEGUNDOS = 3             # Segundos entre acciones
-TESTBED_FILE = "testbed.yaml"          # Ruta al archivo testbed
+PROTOCOLO_ESPERADO = "lacp"
+PORT_CHANNEL_OBJETIVO = 1
+TIEMPO_ESPERA_SEGUNDOS = 3
+TESTBED_FILE = "testbed.yaml"
 
 
 # ============================================================================
@@ -80,21 +73,11 @@ def esperar_segundos(segundos):
 
 
 # ============================================================================
-# FUNCIÓN: MOSTRAR MENÚ INTERACTIVO
+# FUNCIÓN: MOSTRAR MENÚ DE DISPOSITIVOS
 # ============================================================================
 
 def mostrar_menu_dispositivos(testbed_file: str) -> Optional[List[str]]:
-    """
-    Muestra un menú interactivo para elegir dispositivos.
-    
-    Opciones:
-      1. Validar un dispositivo específico
-      2. Validar todos los dispositivos
-      3. Salir
-    
-    Retorna:
-      Lista de dispositivos a validar, o None si el usuario cancela
-    """
+    """Muestra menú para elegir dispositivos a validar"""
     try:
         imprimir_info(f"Cargando testbed desde: {testbed_file}")
         topologia = loader.load(testbed_file)
@@ -158,7 +141,56 @@ def mostrar_menu_dispositivos(testbed_file: str) -> Optional[List[str]]:
 
 
 # ============================================================================
-# FUNCIÓN 1: CONECTAR AL DISPOSITIVO
+# FUNCIÓN: MENÚ DE SIMULACIÓN DE FALLO (NUEVA)
+# ============================================================================
+
+def mostrar_menu_simulacion() -> str:
+    """
+    Menú para que el usuario ELIJA si desea hacer la simulación de fallo.
+    
+    Retorna:
+      "completa" - Hacer la simulación completa (10 pasos)
+      "diagnostico" - Solo verificar estado (sin simulación)
+      "cancelar" - Cancelar validación
+    """
+    
+    imprimir_titulo("OPCIONES DE VALIDACIÓN")
+    
+    print(f"\n¿Qué deseas hacer?\n")
+    print(f"  [1] VALIDACIÓN COMPLETA (Simular fallo y recuperación)")
+    print(f"      └─ El script hará shutdown, validará resiliencia y recuperará")
+    print(f"      └─ Duración: ~30 segundos")
+    print(f"      └─ ADVERTENCIA: Causará breve desconexión")
+    print(f"")
+    print(f"  [2] DIAGNÓSTICO SOLAMENTE (Solo verificar estado)")
+    print(f"      └─ Sin simular fallos")
+    print(f"      └─ Verificar protocolo, redundancia, distribución")
+    print(f"      └─ Duración: ~5 segundos")
+    print(f"      └─ Seguro: Sin desconexiones")
+    print(f"")
+    print(f"  [3] CANCELAR")
+    print(f"      └─ Salir sin validar")
+    
+    imprimir_pregunta("Elige una opción (1/2/3):")
+    opcion = input("  → ").strip()
+    
+    if opcion == "1":
+        imprimir_exito("Realizarás VALIDACIÓN COMPLETA")
+        imprimir_advertencia("El Port-Channel tendrá una interfaz deshabilitada temporalmente")
+        return "completa"
+    elif opcion == "2":
+        imprimir_exito("Realizarás DIAGNÓSTICO SOLAMENTE (sin simulación)")
+        return "diagnostico"
+    elif opcion == "3":
+        imprimir_info("Cancelando validación")
+        return "cancelar"
+    else:
+        imprimir_error("Opción no válida")
+        return mostrar_menu_simulacion()  # Reintentar
+
+
+# ============================================================================
+# FUNCIÓN 1: CONECTAR
 # ============================================================================
 
 def conectar_equipo(nombre_dispositivo: str, testbed_file: str):
@@ -318,14 +350,12 @@ def validar_resiliencia(
     print(f"Miembros ANTES:  {len(miembros_antes)} → {miembros_antes}")
     print(f"Miembros DESPUÉS: {len(miembros_despues)} → {miembros_despues}")
     
-    # Verificar si hay miembros restantes
     if len(miembros_despues) == 0:
         imprimir_error("Port-Channel colapsó (0 miembros)")
         return False
     
     imprimir_exito(f"Port-Channel operacional ({len(miembros_despues)} miembro(s))")
     
-    # Verificar que interfaz fue removida
     if interfaz_deshabilitada in miembros_despues:
         imprimir_advertencia("Interfaz aún en lista (puede tardar)")
     else:
@@ -347,11 +377,12 @@ def generar_reporte_final(
     resiliencia_ok: bool,
     miembros_antes: int,
     miembros_con_fallo: int,
-    miembros_recuperados: int
+    miembros_recuperados: int,
+    modo_validacion: str
 ) -> bool:
     """Genera reporte visual final del test"""
     
-    imprimir_titulo("REPORTE FINAL - TEST DE RESILIENCIA")
+    imprimir_titulo("REPORTE FINAL - TEST DE VALIDACIÓN")
     
     print(f"\n📋 DISPOSITIVO:")
     print(f"   Nombre: {dispositivo_nombre}")
@@ -369,31 +400,49 @@ def generar_reporte_final(
         print(f"   Detectado: {protocolo_detectado.upper()}")
         print(f"   ✗ PROTOCOLO INCORRECTO")
     
-    print(f"\n⚡ SIMULACIÓN DE FALLO:")
-    print(f"   Interfaz testeada: {interfaz_testeada}")
-    print(f"   Miembros antes:     {miembros_antes}")
-    print(f"   Miembros con fallo: {miembros_con_fallo}")
-    print(f"   Miembros recuperados: {miembros_recuperados}")
-    
-    print(f"\n🛡️  RESILIENCIA:")
-    if resiliencia_ok:
-        print(f"   ✓ Port-Channel SOBREVIVIÓ al fallo (RESILIENTE)")
-        print(f"   ✓ Tráfico mantenido a través de otros miembros")
+    print(f"\n✅ REDUNDANCIA:")
+    if miembros_antes >= 2:
+        print(f"   ✓ TIENE REDUNDANCIA: {miembros_antes} interfaces bundled")
     else:
-        print(f"   ✗ Port-Channel COLAPSÓ (NO RESILIENTE)")
-        print(f"   ✗ Pérdida de conectividad")
+        print(f"   ✗ SIN REDUNDANCIA: Solo {miembros_antes} interfaz(ces)")
+    
+    if modo_validacion == "completa":
+        print(f"\n⚡ SIMULACIÓN DE FALLO:")
+        print(f"   Interfaz testeada: {interfaz_testeada}")
+        print(f"   Miembros antes:     {miembros_antes}")
+        print(f"   Miembros con fallo: {miembros_con_fallo}")
+        print(f"   Miembros recuperados: {miembros_recuperados}")
+        
+        print(f"\n🛡️  RESILIENCIA:")
+        if resiliencia_ok:
+            print(f"   ✓ Port-Channel SOBREVIVIÓ al fallo (RESILIENTE)")
+            print(f"   ✓ Tráfico mantenido a través de otros miembros")
+        else:
+            print(f"   ✗ Port-Channel COLAPSÓ (NO RESILIENTE)")
+            print(f"   ✗ Pérdida de conectividad")
     
     print(f"\n📊 CONCLUSIÓN:")
     
-    if protocolo_ok and resiliencia_ok:
-        print(f"   ✓✓✓ TEST PASADO: Protocolo OK + Resiliencia OK")
-        return True
-    elif protocolo_ok and not resiliencia_ok:
-        print(f"   ⚠ TEST PARCIAL: Protocolo OK pero Resiliencia comprometida")
-        return False
-    else:
-        print(f"   ✗✗✗ TEST FALLIDO: Protocolo incorrecto")
-        return False
+    if modo_validacion == "diagnostico":
+        print(f"   MODO: Diagnóstico (sin simulación)")
+        if protocolo_ok and miembros_antes >= 2:
+            print(f"   ✓✓ ESTADO ACTUAL BUENO")
+            print(f"   Protocolo: Correcto | Redundancia: OK")
+            return True
+        else:
+            print(f"   ⚠ ESTADO ACTUAL CON PROBLEMAS")
+            return False
+    
+    else:  # modo completa
+        if protocolo_ok and resiliencia_ok:
+            print(f"   ✓✓✓ TEST PASADO: Protocolo OK + Resiliencia OK")
+            return True
+        elif protocolo_ok and not resiliencia_ok:
+            print(f"   ⚠ TEST PARCIAL: Protocolo OK pero Resiliencia comprometida")
+            return False
+        else:
+            print(f"   ✗✗✗ TEST FALLIDO: Protocolo incorrecto")
+            return False
 
 
 # ============================================================================
@@ -410,14 +459,16 @@ def desconectar_equipo(dispositivo):
 
 
 # ============================================================================
-# FUNCIÓN PRINCIPAL: VALIDAR UN DISPOSITIVO
+# FUNCIÓN: VALIDAR UN DISPOSITIVO (MEJORADA)
 # ============================================================================
 
-def validar_dispositivo(nombre_dispositivo: str) -> bool:
+def validar_dispositivo(nombre_dispositivo: str, modo_validacion: str) -> bool:
     """
-    Ejecuta la validación completa para UN dispositivo.
+    Ejecuta validación según el modo seleccionado.
     
-    Retorna: True si test pasó, False si falló o no se pudo ejecutar
+    modo_validacion:
+      "completa" - Simulación completa (10 pasos)
+      "diagnostico" - Solo diagnóstico (sin simulación)
     """
     
     imprimir_titulo(f"VALIDANDO: {nombre_dispositivo}")
@@ -426,13 +477,14 @@ def validar_dispositivo(nombre_dispositivo: str) -> bool:
     print(f"  - Dispositivo: {nombre_dispositivo}")
     print(f"  - Protocolo: {PROTOCOLO_ESPERADO.upper()}")
     print(f"  - Port-Channel: {PORT_CHANNEL_OBJETIVO}")
+    print(f"  - Modo: {'VALIDACIÓN COMPLETA (con simulación)' if modo_validacion == 'completa' else 'DIAGNÓSTICO (sin simulación)'}")
     
     # Paso 1: Conectar
     imprimir_seccion("PASO 1: Conectar al Dispositivo")
     dispositivo = conectar_equipo(nombre_dispositivo, TESTBED_FILE)
     
     if dispositivo is None:
-        imprimir_error("Conexión fallida - saltando este dispositivo")
+        imprimir_error("Conexión fallida")
         return False
     
     # Paso 2: Aprender estado inicial
@@ -457,16 +509,13 @@ def validar_dispositivo(nombre_dispositivo: str) -> bool:
     
     # Paso 4: Verificar protocolo
     imprimir_seccion("PASO 4: Verificar Protocolo")
-    protocolo_ok, protocolo_detectado = verificar_protocolo(
-        datos_pc,
-        PROTOCOLO_ESPERADO
-    )
+    protocolo_ok, protocolo_detectado = verificar_protocolo(datos_pc, PROTOCOLO_ESPERADO)
     
     print(f"Esperado:  {PROTOCOLO_ESPERADO.upper()}")
     print(f"Detectado: {protocolo_detectado.upper()}")
     
     if not protocolo_ok:
-        imprimir_error("PROTOCOLO INCORRECTO - Script finaliza para este dispositivo")
+        imprimir_error("PROTOCOLO INCORRECTO")
         desconectar_equipo(dispositivo)
         return False
     
@@ -485,6 +534,29 @@ def validar_dispositivo(nombre_dispositivo: str) -> bool:
         desconectar_equipo(dispositivo)
         return False
     
+    # SI MODO DIAGNÓSTICO: Saltamos la simulación
+    if modo_validacion == "diagnostico":
+        imprimir_seccion("DIAGNÓSTICO COMPLETADO (Sin Simulación)")
+        
+        test_pasado = generar_reporte_final(
+            nombre_dispositivo,
+            PORT_CHANNEL_OBJETIVO,
+            PROTOCOLO_ESPERADO,
+            protocolo_detectado,
+            "N/A",
+            True,
+            len(miembros_antes),
+            len(miembros_antes),
+            len(miembros_antes),
+            "diagnostico"
+        )
+        
+        imprimir_seccion("Limpiar")
+        desconectar_equipo(dispositivo)
+        
+        return test_pasado
+    
+    # SI MODO COMPLETA: Continuamos con la simulación
     interfaz_a_fallar = miembros_antes[0]
     
     # Paso 6: Simular fallo
@@ -545,7 +617,8 @@ def validar_dispositivo(nombre_dispositivo: str) -> bool:
         resiliencia_ok,
         len(miembros_antes),
         len(miembros_despues_fallo),
-        len(miembros_recuperados)
+        len(miembros_recuperados),
+        "completa"
     )
     
     # Limpiar
@@ -556,15 +629,11 @@ def validar_dispositivo(nombre_dispositivo: str) -> bool:
 
 
 # ============================================================================
-# FUNCIÓN PRINCIPAL: VALIDAR MÚLTIPLES DISPOSITIVOS
+# FUNCIÓN: VALIDAR MÚLTIPLES DISPOSITIVOS
 # ============================================================================
 
-def validar_multiples_dispositivos(dispositivos: List[str]) -> Dict[str, bool]:
-    """
-    Valida múltiples dispositivos y retorna resumen.
-    
-    Retorna: Diccionario con {dispositivo: test_pasado}
-    """
+def validar_multiples_dispositivos(dispositivos: List[str], modo_validacion: str) -> Dict[str, bool]:
+    """Valida múltiples dispositivos"""
     
     resultados = {}
     total = len(dispositivos)
@@ -574,10 +643,9 @@ def validar_multiples_dispositivos(dispositivos: List[str]) -> Dict[str, bool]:
         print(f"# DISPOSITIVO {i} DE {total}: {dispositivo}")
         print(f"{'#'*70}\n")
         
-        resultado = validar_dispositivo(dispositivo)
+        resultado = validar_dispositivo(dispositivo, modo_validacion)
         resultados[dispositivo] = resultado
         
-        # Pequeña pausa entre dispositivos
         if i < total:
             esperar_segundos(2)
     
@@ -622,28 +690,35 @@ def imprimir_resumen_final(resultados: Dict[str, bool]):
 # ============================================================================
 
 def main():
-    """Punto de entrada: Menú interactivo para elegir validación"""
+    """Punto de entrada: Menú interactivo"""
     
-    imprimir_titulo("ETHERCHANNEL RESILIENCE SIMULATOR - Versión Mejorada")
+    imprimir_titulo("ETHERCHANNEL RESILIENCE SIMULATOR - v3.0")
+    print("\n[INFO] Con menú para seleccionar tipo de validación")
     
-    # Mostrar menú y obtener dispositivos a validar
+    # Mostrar menú de dispositivos
     dispositivos_a_validar = mostrar_menu_dispositivos(TESTBED_FILE)
     
     if dispositivos_a_validar is None:
         imprimir_error("No se seleccionaron dispositivos")
         return False
     
+    # Mostrar menú de tipo de validación
+    modo_validacion = mostrar_menu_simulacion()
+    
+    if modo_validacion == "cancelar":
+        imprimir_info("Validación cancelada")
+        return False
+    
     # Validar dispositivos
     if len(dispositivos_a_validar) == 1:
-        # Validar un solo dispositivo
-        resultado = validar_dispositivo(dispositivos_a_validar[0])
+        # Un solo dispositivo
+        resultado = validar_dispositivo(dispositivos_a_validar[0], modo_validacion)
         return resultado
     else:
-        # Validar múltiples dispositivos
-        resultados = validar_multiples_dispositivos(dispositivos_a_validar)
+        # Múltiples dispositivos
+        resultados = validar_multiples_dispositivos(dispositivos_a_validar, modo_validacion)
         imprimir_resumen_final(resultados)
         
-        # Retornar True si al menos uno pasó
         return any(resultados.values())
 
 
